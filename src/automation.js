@@ -1,8 +1,7 @@
 import crypto from "node:crypto";
 import { chromium } from "playwright";
 
-const DEFAULT_LANDING_URL =
-  "https://landing.brazzersnetwork.com/?ats=eyJhIjoyODc2NDUsImMiOjU2NTA2NDU4LCJuIjoxNCwicyI6OTAsImUiOjg4MDMsInAiOjMzOX0%3D&atc=Autocampaign_Default&apb=23e52e0c40074a70%7Cbrazzers";
+const DEFAULT_LANDING_URL ="testwebsite.com";
 
 
 function password16() {
@@ -192,7 +191,7 @@ await cardFrame
 
 await cardFrame
   .locator('input[name="cardNumber"]')
-  .fill(process.env.CARD_NUMBER);
+  .fill(process.CARD_NUMBER);
 
 
 // EXPIRY
@@ -202,7 +201,7 @@ await page
 
 await page
   .locator('input[name="cc-exp"]')
-  .fill(process.env.CARD_EXPIRY);
+  .fill(process.CARD_EXPIRY);
 
 
 // CVV
@@ -212,7 +211,7 @@ await cvvFrame
 
 await cvvFrame
   .locator('input[name="Data"]')
-  .fill(process.env.CARD_CVV);
+  .fill(process.CARD_CVV);
 
 
 return {
