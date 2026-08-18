@@ -71,15 +71,37 @@ bot.on("text", async ctx => {
     s.data.firstName = v; s.step = "last"; return void ctx.reply("Last name:");
   }
   if (s.step === "last") {
-    s.data.lastName = v; s.step = "country"; return void ctx.reply("Country:");
+    s.data.lastName = v;
+    s.step = "tree";
+    return void ctx.reply("Tree:");
   }
+
+  if (s.step === "tree") {
+    s.data.tree = v;
+    s.step = "fruit";
+    return void ctx.reply("Fruit:");
+  }
+
+  if (s.step === "fruit") {
+    s.data.fruit = v;
+    s.step = "flower";
+    return void ctx.reply("Flower:");
+  }
+
+  if (s.step === "flower") {
+    s.data.flower = v;
+    s.step = "country";
+    return void ctx.reply("Country:");
+  }
+
   if (s.step === "country") {
     s.data.country = v; s.step = "zip"; return void ctx.reply("ZIP / postal code:");
   }
+
   if (s.step === "zip") {
     s.data.postalCode = v; s.step = "confirm";
     await ctx.reply(
-      `Email: ${s.data.email}\nName: ${s.data.firstName} ${s.data.lastName}\nCountry: ${s.data.country}\nZIP: ${s.data.postalCode}`,
+      `Email: ${s.data.email}\nName: ${s.data.firstName} ${s.data.lastName}\nTree: ${s.data.tree}\nFruit: ${s.data.fruit}\nFlower: ${s.data.flower}\nCountry: ${s.data.country}\nZIP: ${s.data.postalCode}`,
       Markup.inlineKeyboard([
         Markup.button.callback("Start automation", "begin"),
         Markup.button.callback("Cancel", "cancel_input")
