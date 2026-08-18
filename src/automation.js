@@ -234,7 +234,12 @@ function purchaseState(url, bodyText) {
     return { state: "success" };
   }
 
-  if (/brazzers\.com\/join(?:[/?#]|$)/i.test(url) || /choose your membership type/i.test(text)) {
+  if (
+    /brazzers\.com\/join(?:[/?#]|$)/i.test(url) ||
+    /landing\.brazzersnetwork\.com\/join1(?:[/?#]|$)/i.test(url) ||
+    /choose your membership type/i.test(text) ||
+    /choose your membership/i.test(text)
+  ) {
     return { state: "join" };
   }
 
