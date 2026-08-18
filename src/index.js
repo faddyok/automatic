@@ -1,273 +1,187 @@
 import http from "node:http";
-import fs from "node:fs/promises";
 import { Telegraf, Markup } from "telegraf";
-import { runSignup } from "./automation.js";
+import { prepareSignup, purchase } from "./automation.js";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-if (!BOT_TOKEN) {
-  throw new Error("BOT_TOKEN is required.");
-}
+if (!BOT_TOKEN) throw new Error("BOT_TOKEN is required.");
 
-const ALLOWED_TELEGRAM_ID = String(process.env.ALLOWED_TELEGRAM_ID || "").trim();
-const PORT = Number(process.env.PORT || 3000);
+const APP_PORT = Number(process.env.APP_PORT || 3001);
+const ALLOWED_ID = String(process.env.ALLOWED_TELEGRAM_ID || "").trim();
+const PUBLIC_BASE_URL = String(process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
+const TTL = Math.max(2, Number(process.env.SESSION_TTL_MINUTES || 10));
 
 const bot = new Telegraf(BOT_TOKEN);
-const sessions = new Map();
-const activeUsers = new Set();
+const inputs = new Map();
+const jobs = new Map();
 
 function allowed(ctx) {
-  if (!ALLOWED_TELEGRAM_ID) return true;
-  return String(ctx.from?.id ?? "") === ALLOWED_TELEGRAM_ID;
+  return !ALLOWED_ID || String(ctx.from?.id || "") === ALLOWED_ID;
 }
 
-async function denyIfNeeded(ctx) {
+async function guard(ctx) {
   if (allowed(ctx)) return false;
   await ctx.reply("This bot is private.");
   return true;
 }
 
-function newSession() {
-  return {
-    step: "email",
-    data: {}
-  };
+async function closeJob(id) {
+  const j = jobs.get(id);
+  if (!j) return;
+  jobs.delete(id);
+  clearTimeout(j.timer);
+  try { await j.context.close(); } catch {}
+  try { await j.browser.close(); } catch {}
 }
 
-function validEmail(value) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-}
-
-function validPostal(value) {
-  return /^[A-Za-z0-9][A-Za-z0-9 -]{1,11}$/.test(value);
-}
-
-function summary(data) {
-  return [
-    "Please confirm:",
-    "",
-    `Email: ${data.email}`,
-    `Name: ${data.firstName} ${data.lastName}`,
-    `Country: ${data.country}`,
-    `Postal/ZIP: ${data.postalCode}`,
-    "",
-    "The browser will select the currently displayed FREE 7 DAYS offer and reach the secure payment page.",
-    "It will NOT collect, store, or enter card number, expiration date, or CVV.",
-    "Check the site's current renewal price/terms before completing any payment."
-  ].join("\n");
-}
-
-bot.start(async (ctx) => {
-  if (await denyIfNeeded(ctx)) return;
+bot.start(async ctx => {
+  if (await guard(ctx)) return;
   await ctx.reply(
-    [
-      "Signup helper is online.",
-      "",
-      "/signup - start a signup",
-      "/cancel - cancel the current input flow",
-      "/whoami - show your Telegram user ID",
-      "",
-      "This bot automates the landing/signup steps and stops at secure payment entry."
-    ].join("\n")
+    "/signup - begin\n/cancel - cancel current session\n/whoami - show your Telegram ID"
   );
 });
 
-bot.command("whoami", async (ctx) => {
-  await ctx.reply(`Your Telegram user ID: ${ctx.from.id}`);
-});
+bot.command("whoami", async ctx => ctx.reply(`Your Telegram user ID: ${ctx.from.id}`));
 
-bot.command("cancel", async (ctx) => {
-  if (await denyIfNeeded(ctx)) return;
-  sessions.delete(ctx.from.id);
+bot.command("cancel", async ctx => {
+  if (await guard(ctx)) return;
+  inputs.delete(ctx.from.id);
+  await closeJob(ctx.from.id);
   await ctx.reply("Cancelled.");
 });
 
-bot.command("signup", async (ctx) => {
-  if (await denyIfNeeded(ctx)) return;
-
-  if (activeUsers.has(ctx.from.id)) {
-    await ctx.reply("A browser job is already running for you.");
-    return;
-  }
-
-  sessions.set(ctx.from.id, newSession());
-  await ctx.reply("Send the email address you want to use:");
+bot.command("signup", async ctx => {
+  if (await guard(ctx)) return;
+  if (jobs.has(ctx.from.id)) return void ctx.reply("A browser is already active. Use /cancel first.");
+  inputs.set(ctx.from.id, { step: "email", data: {} });
+  await ctx.reply("Email:");
 });
 
-bot.on("text", async (ctx) => {
-  if (await denyIfNeeded(ctx)) return;
+bot.on("text", async ctx => {
+  if (await guard(ctx)) return;
+  const s = inputs.get(ctx.from.id);
+  if (!s) return;
+  const v = ctx.message.text.trim();
+  if (v.startsWith("/")) return;
 
-  const userId = ctx.from.id;
-  const session = sessions.get(userId);
-  if (!session) return;
-
-  const value = ctx.message.text.trim();
-
-  if (value.startsWith("/")) return;
-
-  if (session.step === "email") {
-    if (!validEmail(value)) {
-      await ctx.reply("That does not look like a valid email. Send it again:");
-      return;
-    }
-    session.data.email = value;
-    session.step = "firstName";
-    await ctx.reply("First name:");
-    return;
+  if (s.step === "email") {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return void ctx.reply("Send a valid email:");
+    s.data.email = v; s.step = "first"; return void ctx.reply("First name:");
   }
-
-  if (session.step === "firstName") {
-    if (value.length < 1 || value.length > 60) {
-      await ctx.reply("Send a valid first name:");
-      return;
-    }
-    session.data.firstName = value;
-    session.step = "lastName";
-    await ctx.reply("Last name:");
-    return;
+  if (s.step === "first") {
+    s.data.firstName = v; s.step = "last"; return void ctx.reply("Last name:");
   }
-
-  if (session.step === "lastName") {
-    if (value.length < 1 || value.length > 60) {
-      await ctx.reply("Send a valid last name:");
-      return;
-    }
-    session.data.lastName = value;
-    session.step = "country";
-    await ctx.reply('Country exactly as it appears at checkout, for example "United States":');
-    return;
+  if (s.step === "last") {
+    s.data.lastName = v; s.step = "country"; return void ctx.reply("Country:");
   }
-
-  if (session.step === "country") {
-    if (value.length < 2 || value.length > 80) {
-      await ctx.reply("Send a valid country name:");
-      return;
-    }
-    session.data.country = value;
-    session.step = "postalCode";
-    await ctx.reply("ZIP / postal code:");
-    return;
+  if (s.step === "country") {
+    s.data.country = v; s.step = "zip"; return void ctx.reply("ZIP / postal code:");
   }
-
-  if (session.step === "postalCode") {
-    if (!validPostal(value)) {
-      await ctx.reply("Send a valid ZIP / postal code:");
-      return;
-    }
-
-    session.data.postalCode = value;
-    session.step = "confirm";
-
+  if (s.step === "zip") {
+    s.data.postalCode = v; s.step = "confirm";
     await ctx.reply(
-      summary(session.data),
+      `Email: ${s.data.email}\nName: ${s.data.firstName} ${s.data.lastName}\nCountry: ${s.data.country}\nZIP: ${s.data.postalCode}`,
       Markup.inlineKeyboard([
-        Markup.button.callback("Start automation", "begin_signup"),
-        Markup.button.callback("Cancel", "cancel_signup")
+        Markup.button.callback("Start automation", "begin"),
+        Markup.button.callback("Cancel", "cancel_input")
       ])
     );
   }
 });
 
-bot.action("cancel_signup", async (ctx) => {
-  if (await denyIfNeeded(ctx)) return;
-  sessions.delete(ctx.from.id);
+bot.action("cancel_input", async ctx => {
+  inputs.delete(ctx.from.id);
   await ctx.answerCbQuery();
-  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
   await ctx.reply("Cancelled.");
 });
 
-bot.action("begin_signup", async (ctx) => {
-  if (await denyIfNeeded(ctx)) return;
-
-  const userId = ctx.from.id;
-  const session = sessions.get(userId);
-
-  if (!session || session.step !== "confirm") {
-    await ctx.answerCbQuery("Start /signup again.");
-    return;
-  }
-
-  if (activeUsers.has(userId)) {
-    await ctx.answerCbQuery("A job is already running.");
-    return;
-  }
-
-  const profile = { ...session.data };
-  sessions.delete(userId);
-  activeUsers.add(userId);
+bot.action("begin", async ctx => {
+  if (await guard(ctx)) return;
+  const s = inputs.get(ctx.from.id);
+  if (!s || s.step !== "confirm") return void ctx.answerCbQuery("Use /signup again.");
+  inputs.delete(ctx.from.id);
 
   await ctx.answerCbQuery();
-  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-  await ctx.reply("Starting Chromium on Railway…");
+  await ctx.reply("Starting browser…");
 
-  void (async () => {
-    let result;
-    try {
-      result = await runSignup(profile, async (message) => {
-        await ctx.reply(`• ${message}`);
-      });
+  try {
+    const job = await prepareSignup(s.data, async m => ctx.reply(`• ${m}`));
+    job.timer = setTimeout(() => closeJob(ctx.from.id), TTL * 60_000);
+    jobs.set(ctx.from.id, job);
 
-      const lines = [
-        "Browser automation finished.",
+    const viewer = PUBLIC_BASE_URL
+      ? `${PUBLIC_BASE_URL}/novnc/vnc.html?autoconnect=true&resize=scale&path=websockify`
+      : "(Set PUBLIC_BASE_URL in Railway first)";
+
+    await ctx.reply(
+      [
+        "Checkout is ready.",
         "",
-        `Email: ${result.email}`,
-        `Generated password: ${result.password}`,
+        `Username: ${job.username}`,
+        `Password: ${job.password}`,
         "",
-        `Reached: ${result.reachedPaymentPage ? "secure payment page" : "signup flow"}`,
+        "Open the temporary browser:",
+        viewer,
         "",
-        "Payment was NOT submitted. Card number, expiration date and CVV are intentionally not accepted by this bot.",
-        "Use the offer only if you are eligible, and review the current renewal terms before completing checkout."
-      ];
-
-      await ctx.reply(lines.join("\n"));
-
-      if (result.screenshotPath && process.env.SEND_CHECKOUT_SCREENSHOT !== "false") {
-        try {
-          await ctx.replyWithPhoto({ source: result.screenshotPath }, {
-            caption: "Checkout-stage screenshot for debugging. No card data is entered."
-          });
-        } finally {
-          await fs.unlink(result.screenshotPath).catch(() => {});
-        }
-      }
-    } catch (error) {
-      console.error(error);
-      await ctx.reply(`Automation failed: ${error?.message || String(error)}`);
-    } finally {
-      activeUsers.delete(userId);
-      if (result?.screenshotPath) {
-        await fs.unlink(result.screenshotPath).catch(() => {});
-      }
-    }
-  })();
+        "Enter the VNC password you set in Railway as VNC_PASSWORD.",
+        "Then type the card directly into the checkout page.",
+        "Return here and press Purchase when the card fields are complete.",
+        "",
+        `Session closes after ${TTL} minutes.`
+      ].join("\n"),
+      Markup.inlineKeyboard([
+        Markup.button.callback("Purchase / Start Membership", "purchase"),
+        Markup.button.callback("Cancel", "cancel_job")
+      ])
+    );
+  } catch (e) {
+    console.error(e);
+    await ctx.reply(`Automation failed: ${e?.message || String(e)}`);
+  }
 });
 
-bot.catch((err, ctx) => {
-  console.error("Telegram bot error:", err, "update:", ctx?.update?.update_id);
+bot.action("cancel_job", async ctx => {
+  await ctx.answerCbQuery();
+  await closeJob(ctx.from.id);
+  await ctx.reply("Browser closed.");
+});
+
+bot.action("purchase", async ctx => {
+  if (await guard(ctx)) return;
+  const job = jobs.get(ctx.from.id);
+  if (!job) return void ctx.answerCbQuery("No active browser session.");
+  await ctx.answerCbQuery();
+  try {
+    await ctx.reply("Clicking Purchase / Start Membership…");
+    const result = await purchase(job.page);
+    await ctx.reply(
+      [
+        "Purchase button clicked.",
+        `Email: ${job.email}`,
+        `Username: ${job.username}`,
+        `Password: ${job.password}`,
+        `Page: ${result.title || result.url}`
+      ].join("\n")
+    );
+  } catch (e) {
+    await ctx.reply(`Purchase step failed: ${e?.message || String(e)}`);
+  } finally {
+    await closeJob(ctx.from.id);
+  }
 });
 
 const server = http.createServer((req, res) => {
   if (req.url === "/health") {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true }));
-    return;
+    return void res.end(JSON.stringify({ ok: true }));
   }
-
   res.writeHead(200, { "content-type": "text/plain" });
   res.end("Telegram Playwright bot is running.");
 });
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Health server listening on ${PORT}`);
-});
+server.listen(APP_PORT, "0.0.0.0", () => console.log(`Node app listening on ${APP_PORT}`));
 
 await bot.launch({ dropPendingUpdates: true });
 console.log("Telegram long polling started.");
 
-const shutdown = async (signal) => {
-  console.log(`Received ${signal}; shutting down.`);
-  bot.stop(signal);
-  server.close(() => process.exit(0));
-};
-
-process.once("SIGINT", () => shutdown("SIGINT"));
-process.once("SIGTERM", () => shutdown("SIGTERM"));
+process.once("SIGINT", () => bot.stop("SIGINT"));
+process.once("SIGTERM", () => bot.stop("SIGTERM"));
