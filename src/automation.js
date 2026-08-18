@@ -4,6 +4,7 @@ import { chromium } from "playwright";
 const DEFAULT_LANDING_URL =
   "https://landing.brazzersnetwork.com/?ats=eyJhIjoyODc2NDUsImMiOjU2NTA2NDU4LCJuIjoxNCwicyI6OTAsImUiOjg4MDMsInAiOjMzOX0%3D&atc=Autocampaign_Default&apb=23e52e0c40074a70%7Cbrazzers";
 
+
 function password16() {
   // Exactly 16 chars. Includes upper/lower/digit/symbol.
   const tail = crypto.randomBytes(8).toString("hex").slice(0, 12);
@@ -133,47 +134,95 @@ export async function prepareSignup(profile, status = async () => {}) {
       .first().waitFor({ state: "visible", timeout: 20000 }).catch(() => null)
   ]);
 
-  const atCheckout =
-    /probiller/i.test(page.url()) ||
-    await page.locator('input[placeholder*="Card Number" i], input[name*="card" i]')
-      .first().isVisible().catch(() => false);
 
-  if (!atCheckout) throw new Error("Secure checkout was not reached.");
 
-  await status("Filling username/password/name/address");
+  
+const cardFrame = page.frameLocator('#tx_iframe_ccNumber');
+const cvvFrame = page.frameLocator('#tx_iframe_cvv_cvv');
 
-  await fillAny([
-    page.locator('input[placeholder*="Password" i]'),
-    page.locator('input[name*="password" i]')
-  ], password, "password");
+// Check that checkout was actually reached
+const atCheckout =
+  /probiller/i.test(page.url()) ||
+  await cardFrame
+    .locator('input[name="cardNumber"]')
+    .isVisible()
+    .catch(() => false);
 
-  await fillAny([
-    page.locator('input[placeholder*="Username" i]'),
-    page.locator('input[name*="username" i]'),
-    page.locator('input[name="username"]')
-  ], username, "username", 1200, false);
-
-  await fillAny([
-    page.locator('input[placeholder*="First Name" i]'),
-    page.locator('input[name*="first" i]')
-  ], profile.firstName, "first name");
-
-  await fillAny([
-    page.locator('input[placeholder*="Last Name" i]'),
-    page.locator('input[name*="last" i]')
-  ], profile.lastName, "last name");
-
-  await chooseCountry(page, profile.country);
-
-  await fillAny([
-    page.locator('input[placeholder*="Zip" i]'),
-    page.locator('input[placeholder*="Postal" i]'),
-    page.locator('input[name*="zip" i]'),
-    page.locator('input[name*="postal" i]')
-  ], profile.postalCode, "ZIP/postal code");
-
-  return { browser, context, page, email: profile.email, username, password };
+if (!atCheckout) {
+  throw new Error("Secure checkout was not reached.");
 }
+
+await status("Filling username/password/name/address");
+
+await fillAny([
+  page.locator('input[placeholder*="Password" i]'),
+  page.locator('input[name*="password" i]')
+], password, "password");
+
+await fillAny([
+  page.locator('input[placeholder*="Username" i]'),
+  page.locator('input[name*="username" i]'),
+  page.locator('input[name="username"]')
+], username, "username", 1200, false);
+
+await fillAny([
+  page.locator('input[placeholder*="First Name" i]'),
+  page.locator('input[name*="first" i]')
+], profile.firstName, "first name");
+
+await fillAny([
+  page.locator('input[placeholder*="Last Name" i]'),
+  page.locator('input[name*="last" i]')
+], profile.lastName, "last name");
+
+await chooseCountry(page, profile.country);
+
+await fillAny([
+  page.locator('input[placeholder*="Zip" i]'),
+  page.locator('input[placeholder*="Postal" i]'),
+  page.locator('input[name*="zip" i]'),
+  page.locator('input[name*="postal" i]')
+], profile.postalCode, "ZIP/postal code");
+
+
+// CARD NUMBER
+await cardFrame
+  .locator('input[name="cardNumber"]')
+  .waitFor({ state: "visible" });
+
+await cardFrame
+  .locator('input[name="cardNumber"]')
+  .fill(process.env.CARD_NUMBER);
+
+
+// EXPIRY
+await page
+  .locator('input[name="cc-exp"]')
+  .waitFor({ state: "visible" });
+
+await page
+  .locator('input[name="cc-exp"]')
+  .fill(process.env.CARD_EXPIRY);
+
+
+// CVV
+await cvvFrame
+  .locator('input[name="Data"]')
+  .waitFor({ state: "visible" });
+
+await cvvFrame
+  .locator('input[name="Data"]')
+  .fill(process.env.CARD_CVV);
+
+
+return {
+  browser,
+  context,
+  page,
+  email: profile.email,
+  username,
+  password
+};}
 
 export async function purchase(page) {
   await clickAny([
