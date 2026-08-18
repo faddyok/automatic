@@ -1,8 +1,7 @@
 {
-  "name": "railway-telegram-playwright-bot",
+  "name": "telegram-playwright-railway-v3",
   "version": "1.0.0",
   "private": true,
-  "description": "Telegram-controlled Playwright signup helper for Railway. Stops at secure payment entry.",
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
