@@ -33,6 +33,41 @@ async function closeJob(id) {
   try { await j.browser.close(); } catch {}
 }
 
+function viewerUrl() {
+  return PUBLIC_BASE_URL
+    ? `${PUBLIC_BASE_URL}/novnc/vnc.html?autoconnect=true&resize=scale&path=websockify`
+    : "(Set PUBLIC_BASE_URL in Railway first)";
+}
+
+function armJobTimer(id, job) {
+  clearTimeout(job.timer);
+  job.timer = setTimeout(() => closeJob(id), TTL * 60_000);
+}
+
+async function sendCheckoutReady(ctx, job, note = "Checkout is ready.") {
+  await ctx.reply(
+    [
+      note,
+      "",
+      `Username: ${job.username}`,
+      `Password: ${job.password}`,
+      "",
+      "Open the temporary browser:",
+      viewerUrl(),
+      "",
+      "Enter the VNC password you set in Railway as VNC_PASSWORD.",
+      "Then type the card directly into the checkout page.",
+      "Return here and press Purchase when the card fields are complete.",
+      "",
+      `Session closes after ${TTL} minutes.`
+    ].join("\n"),
+    Markup.inlineKeyboard([
+      Markup.button.callback("Purchase / Start Membership", "purchase"),
+      Markup.button.callback("Cancel", "cancel_job")
+    ])
+  );
+}
+
 bot.start(async ctx => {
   if (await guard(ctx)) return;
   await ctx.reply(
@@ -127,34 +162,9 @@ bot.action("begin", async ctx => {
 
   try {
     const job = await prepareSignup(s.data, async m => ctx.reply(`• ${m}`));
-    job.timer = setTimeout(() => closeJob(ctx.from.id), TTL * 60_000);
     jobs.set(ctx.from.id, job);
-
-    const viewer = PUBLIC_BASE_URL
-      ? `${PUBLIC_BASE_URL}/novnc/vnc.html?autoconnect=true&resize=scale&path=websockify`
-      : "(Set PUBLIC_BASE_URL in Railway first)";
-
-    await ctx.reply(
-      [
-        "Checkout is ready.",
-        "",
-        `Username: ${job.username}`,
-        `Password: ${job.password}`,
-        "",
-        "Open the temporary browser:",
-        viewer,
-        "",
-        "Enter the VNC password you set in Railway as VNC_PASSWORD.",
-        "Then type the card directly into the checkout page.",
-        "Return here and press Purchase when the card fields are complete.",
-        "",
-        `Session closes after ${TTL} minutes.`
-      ].join("\n"),
-      Markup.inlineKeyboard([
-        Markup.button.callback("Purchase / Start Membership", "purchase"),
-        Markup.button.callback("Cancel", "cancel_job")
-      ])
-    );
+    armJobTimer(ctx.from.id, job);
+    await sendCheckoutReady(ctx, job);
   } catch (e) {
     console.error(e);
     await ctx.reply(`Automation failed: ${e?.message || String(e)}`);
@@ -172,22 +182,83 @@ bot.action("purchase", async ctx => {
   const job = jobs.get(ctx.from.id);
   if (!job) return void ctx.answerCbQuery("No active browser session.");
   await ctx.answerCbQuery();
+
   try {
-    await ctx.reply("Clicking Purchase / Start Membership…");
+    await ctx.reply("Clicking Purchase / Start Membership and waiting for the result…");
     const result = await purchase(job.page);
+
+    if (result.state === "success") {
+      await ctx.reply(
+        [
+          "Subscription purchased successfully.",
+          `Email: ${job.email}`,
+          `Username: ${job.username}`,
+          `Password: ${job.password}`,
+          `Page: ${result.title || result.url}`
+        ].join("\n")
+      );
+      await closeJob(ctx.from.id);
+      return;
+    }
+
+    if (result.state === "error") {
+      armJobTimer(ctx.from.id, job);
+      await ctx.reply(
+        [
+          "The checkout reported a payment error/decline.",
+          result.message ? `Detected: ${result.message}` : "",
+          "Open the same browser, update the payment details if needed, then press the button below to resubmit on the same page."
+        ].filter(Boolean).join("\n"),
+        Markup.inlineKeyboard([
+          Markup.button.callback("Resubmit on same page", "purchase"),
+          Markup.button.callback("Cancel", "cancel_job")
+        ])
+      );
+      return;
+    }
+
+    if (result.state === "join") {
+      const profile = job.profile;
+      await ctx.reply("Returned to the join page. Restarting from the first step with the same details…");
+      await closeJob(ctx.from.id);
+
+      const restarted = await prepareSignup(
+        profile,
+        async m => ctx.reply(`• ${m}`),
+        { fillPayment: false }
+      );
+      jobs.set(ctx.from.id, restarted);
+      armJobTimer(ctx.from.id, restarted);
+      await sendCheckoutReady(
+        ctx,
+        restarted,
+        "Checkout is ready again. Your account details were reused; enter/review the payment details in the browser before purchasing."
+      );
+      return;
+    }
+
+    armJobTimer(ctx.from.id, job);
     await ctx.reply(
       [
-        "Purchase button clicked.",
-        `Email: ${job.email}`,
-        `Username: ${job.username}`,
-        `Password: ${job.password}`,
+        "No final success/error page was detected yet.",
+        "The browser has been left open so you can check it and press Purchase again when ready.",
         `Page: ${result.title || result.url}`
-      ].join("\n")
+      ].join("\n"),
+      Markup.inlineKeyboard([
+        Markup.button.callback("Check / submit again", "purchase"),
+        Markup.button.callback("Cancel", "cancel_job")
+      ])
     );
   } catch (e) {
-    await ctx.reply(`Purchase step failed: ${e?.message || String(e)}`);
-  } finally {
-    await closeJob(ctx.from.id);
+    const current = jobs.get(ctx.from.id);
+    if (current) armJobTimer(ctx.from.id, current);
+    await ctx.reply(
+      `Purchase step failed: ${e?.message || String(e)}`,
+      Markup.inlineKeyboard([
+        Markup.button.callback("Try again", "purchase"),
+        Markup.button.callback("Cancel", "cancel_job")
+      ])
+    );
   }
 });
 

@@ -54,7 +54,7 @@ async function chooseCountry(page, country) {
   return false;
 }
 
-export async function prepareSignup(profile, status = async () => {}) {
+export async function prepareSignup(profile, status = async () => {}, options = {}) {
   const browser = await chromium.launch({
     headless: false,
     args: ["--disable-dev-shm-usage", "--start-maximized"]
@@ -71,6 +71,7 @@ export async function prepareSignup(profile, status = async () => {}) {
 
   const password = password16();
   const username = randomUsername();
+  const fillPayment = options.fillPayment !== false;
 
   await status("Opening promotion");
   await page.goto(process.env.LANDING_URL || DEFAULT_LANDING_URL, {
@@ -184,34 +185,36 @@ await fillAny([
 ], profile.postalCode, "ZIP/postal code");
 
 
-// CARD NUMBER
-await cardFrame
-  .locator('input[name="cardNumber"]')
-  .waitFor({ state: "visible" });
+if (fillPayment) {
+  // CARD NUMBER
+  await cardFrame
+    .locator('input[name="cardNumber"]')
+    .waitFor({ state: "visible" });
 
-await cardFrame
-  .locator('input[name="cardNumber"]')
-  .fill(profile.CARD_NUMBER);
-
-
-// EXPIRY
-await page
-  .locator('input[name="cc-exp"]')
-  .waitFor({ state: "visible" });
-
-await page
-  .locator('input[name="cc-exp"]')
-  .fill(profile.CARD_EXPIRY);
+  await cardFrame
+    .locator('input[name="cardNumber"]')
+    .fill(profile.CARD_NUMBER);
 
 
-// CVV
-await cvvFrame
-  .locator('input[name="Data"]')
-  .waitFor({ state: "visible" });
+  // EXPIRY
+  await page
+    .locator('input[name="cc-exp"]')
+    .waitFor({ state: "visible" });
 
-await cvvFrame
-  .locator('input[name="Data"]')
-  .fill(profile.CARD_CVV);
+  await page
+    .locator('input[name="cc-exp"]')
+    .fill(profile.CARD_EXPIRY);
+
+
+  // CVV
+  await cvvFrame
+    .locator('input[name="Data"]')
+    .waitFor({ state: "visible" });
+
+  await cvvFrame
+    .locator('input[name="Data"]')
+    .fill(profile.CARD_CVV);
+}
 
 
 return {
@@ -220,8 +223,67 @@ return {
   page,
   email: profile.email,
   username,
-  password
+  password,
+  profile: { ...profile }
 };}
+
+function purchaseState(url, bodyText) {
+  const text = String(bodyText || "").replace(/\s+/g, " ").trim();
+
+  if (/\/approval(?:[/?#]|$)/i.test(url) || /your account was successfully created/i.test(text)) {
+    return { state: "success" };
+  }
+
+  if (/brazzers\.com\/join(?:[/?#]|$)/i.test(url) || /choose your membership type/i.test(text)) {
+    return { state: "join" };
+  }
+
+  const errorPatterns = [
+    /card (?:was )?declined/i,
+    /payment (?:was )?declined/i,
+    /transaction (?:was )?declined/i,
+    /payment (?:has )?failed/i,
+    /transaction (?:has )?failed/i,
+    /unable to process (?:your )?(?:payment|transaction)/i,
+    /could not process (?:your )?(?:payment|transaction)/i,
+    /invalid card/i,
+    /insufficient funds/i,
+    /try (?:a )?(?:different|another) card/i,
+    /error processing (?:your )?(?:payment|transaction)/i
+  ];
+
+  const match = errorPatterns.find(pattern => pattern.test(text));
+  if (match) {
+    const found = text.match(match)?.[0] || "Payment error";
+    return { state: "error", message: found };
+  }
+
+  return null;
+}
+
+async function waitForPurchaseResult(page, timeout = 45000) {
+  const deadline = Date.now() + timeout;
+
+  while (Date.now() < deadline) {
+    const url = page.url();
+    const bodyText = await page.locator("body").innerText({ timeout: 2000 }).catch(() => "");
+    const result = purchaseState(url, bodyText);
+    if (result) {
+      return {
+        ...result,
+        url,
+        title: await page.title().catch(() => "")
+      };
+    }
+    await page.waitForTimeout(750);
+  }
+
+  return {
+    state: "timeout",
+    url: page.url(),
+    title: await page.title().catch(() => "")
+  };
+}
 
 export async function purchase(page) {
   await clickAny([
@@ -232,9 +294,5 @@ export async function purchase(page) {
     page.getByText(/^Purchase$/i)
   ], "Purchase / Start Membership", 3500);
 
-  await page.waitForTimeout(3000);
-  return {
-    url: page.url(),
-    title: await page.title().catch(() => "")
-  };
+  return await waitForPurchaseResult(page);
 }
