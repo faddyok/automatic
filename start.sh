@@ -11,6 +11,9 @@ if [ -z "${VNC_PASSWORD:-}" ]; then
 fi
 
 mkdir -p /tmp/vnc /var/log/nginx
+echo "Starting Railway browser service..."
+echo "Railway PORT=${PORT:-unset}"
+echo "Node APP_PORT=$APP_PORT"
 
 # Create a password file for x11vnc.
 x11vnc -storepasswd "$VNC_PASSWORD" /tmp/vnc/passwd >/dev/null

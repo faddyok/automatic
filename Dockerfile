@@ -3,7 +3,7 @@ FROM mcr.microsoft.com/playwright:v1.62.0-noble
 USER root
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    xvfb fluxbox x11vnc novnc websockify nginx openssl \
+    xvfb fluxbox x11vnc novnc websockify nginx openssl gettext-base \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
